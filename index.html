@@ -201,12 +201,12 @@ const T_END   = 2015.65;
 const COLORS = ['green', 'blue', 'red'];
 const MARKERS = ['circle', 'square', 'triangle-up'];
 
-// Значения по умолчанию — из вашего скрипта
+// Значения по умолчанию
 const DEFAULTS = {
   alpha_ref: 1.5,
   alpha2:    2.1,
   t_min1:    2015.1987,
-  t_delay:   0.3084,
+  t_delay:   0.4084,
   mu_eff:    35.4115,
   sigma_ref: 2.7,
   slope:    -0.16,
@@ -331,14 +331,17 @@ function computeEseMulti(lenses, sigmaSource, uRange, uPrimeRange,
 
 // ============================================================
 // Кэш Монте-Карло
+// ВАЖНО: ключ включает uOffset2Ref (= -mu_eff * t_delay),
+// потому что он влияет на форму I_ref(u').
 // ============================================================
 const eseCache = new Map();
 
-function cacheKey(alpha1Nu, alpha2Nu, sigmaNu) {
+function cacheKey(alpha1Nu, alpha2Nu, sigmaNu, uOffset2Ref) {
   return [
     alpha1Nu.toFixed(5),
     alpha2Nu.toFixed(5),
     sigmaNu.toFixed(5),
+    uOffset2Ref.toFixed(5),
     params.a_ratio2.toFixed(5),
     params.u_range_min.toFixed(3),
     params.u_range_max.toFixed(3),
@@ -371,7 +374,7 @@ function modelFForOneFrequency(tArray, nuGhz, tRef) {
       a_ratio: params.a_ratio2, z: 0.0 }
   ];
 
-  const key = cacheKey(alpha1Nu, alpha2Nu, sigmaNu);
+  const key = cacheKey(alpha1Nu, alpha2Nu, sigmaNu, uOffset2Ref);
   let cached = eseCache.get(key);
   if (!cached) {
     cached = computeEseMulti(
@@ -531,8 +534,10 @@ function update() {
     `✓ Пересчёт: ${dt} ms · точек данных: ${nPts} · кэш: ${eseCache.size} записей`;
   document.getElementById('status').className = 'status';
 
+  const uOff2 = -params.mu_eff * params.t_delay;
   document.getElementById('resolutionHint').textContent =
-    `u' бины: ${params.draw_num_bins} · диапазон u': [${params.u_prime_range_min}, ${params.u_prime_range_max}] · пересчёт: ${dt} ms`;
+    `u' бины: ${params.draw_num_bins} · диапазон u': [${params.u_prime_range_min}, ${params.u_prime_range_max}] · ` +
+    `u_offset₂ = ${uOff2.toFixed(2)} · пересчёт: ${dt} ms`;
 }
 
 // ============================================================
