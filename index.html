@@ -387,7 +387,6 @@ function modelFForOneFrequency(tArray, nuGhz, tRef) {
   }
 
   const bc = cached.binCenters;
-  // NaN → 1.0 (как в Python)
   const cleaned = new Array(cached.intensity.length);
   for (let k = 0; k < cached.intensity.length; k++) {
     cleaned[k] = isNaN(cached.intensity[k]) ? 1.0 : cached.intensity[k];
@@ -570,11 +569,11 @@ function makeSlider(containerId, key, label, min, max, step, fmt) {
 }
 
 function buildSliders() {
-  // Форма линз
+  // Форма линз: alpha_ref → sigma_ref → alpha2 → a_ratio2
   makeSlider('gridLenses', 'alpha_ref', 'alpha_ref', 0, 5, 0.01, v => v.toFixed(2));
+  makeSlider('gridLenses', 'sigma_ref', 'sigma_ref', 0.3, 5, 0.01, v => v.toFixed(2));
   makeSlider('gridLenses', 'alpha2',    'alpha2',    0, 5, 0.01, v => v.toFixed(2));
   makeSlider('gridLenses', 'a_ratio2',  'a_ratio2',  0.3, 3, 0.01, v => v.toFixed(2));
-  makeSlider('gridLenses', 'sigma_ref', 'sigma_ref', 0.3, 5, 0.01, v => v.toFixed(2));
 
   // Временная эволюция
   makeSlider('gridTime', 't_min1',  't_min1',  2015.0, 2015.65, 0.0001, v => v.toFixed(4));
@@ -600,7 +599,6 @@ function buildSliders() {
 function resetParams() {
   params = { ...DEFAULTS };
   eseCache.clear();
-  // Перерисовываем панели
   document.getElementById('gridLenses').innerHTML = '';
   document.getElementById('gridTime').innerHTML = '';
   document.getElementById('gridNorm').innerHTML = '';
