@@ -96,6 +96,35 @@
     background: #3498db; cursor: pointer;
   }
 
+  /* Панель Resolution — особый стиль */
+  .resolution-panel {
+    background: #eef6ff;
+    border-radius: 14px;
+    padding: 18px 22px;
+    margin-top: 8px;
+    border: 1px solid #cfe3f5;
+  }
+  .resolution-panel h3 {
+    color: #1f6390;
+    border-left-color: #2980b9;
+    margin-top: 0;
+  }
+  .resolution-panel .slider-group .val {
+    background: #2980b9;
+  }
+  .resolution-panel input[type="range"]::-webkit-slider-thumb {
+    background: #2980b9;
+  }
+  .resolution-panel input[type="range"]::-moz-range-thumb {
+    background: #2980b9;
+  }
+  .resolution-hint {
+    font-size: 0.8em;
+    color: #5d7994;
+    margin-top: 12px;
+    font-family: 'Consolas', monospace;
+  }
+
   .status {
     margin-top: 14px; padding: 10px 14px; border-radius: 10px;
     background: #f4f6f8; font-size: 0.85em; color: #34495e;
@@ -138,8 +167,17 @@
     <h3>Временная эволюция</h3>
     <div class="grid" id="gridTime"></div>
 
-    <h3>Нормировки и тренд</h3>
+    <h3>Нормировки</h3>
     <div class="grid" id="gridNorm"></div>
+
+    <!-- Панель Resolution -->
+    <div class="resolution-panel">
+      <h3>Resolution</h3>
+      <div class="grid" id="gridResolution"></div>
+      <div class="resolution-hint" id="resolutionHint">
+        u' бины: 80 · пересчёт: —
+      </div>
+    </div>
 
     <div class="status" id="status">Загрузка данных…</div>
   </div>
@@ -147,7 +185,7 @@
 
 <script>
 // ============================================================
-// КОНСТАНТЫ МОДЕЛИ (как в Python)
+// КОНСТАНТЫ МОДЕЛИ
 // ============================================================
 const FILE_PATHS = [
   "sig_RATAN5.csv",
@@ -176,18 +214,17 @@ const DEFAULTS = {
   F0_1:      2.58,
   F0_2:      2.19,
   F0_3:      1.97,
-  u_range_min: -16,
-  u_range_max:  12
+  // Resolution
+  u_range_min:       -16,
+  u_range_max:        12,
+  u_prime_range_min: -16,
+  u_prime_range_max:  12,
+  draw_num_beta:    8000,
+  draw_num_u:        800,
+  draw_num_bins:      80
 };
 
-// Текущие значения (копия DEFAULTS, потом меняются слайдерами)
 let params = { ...DEFAULTS };
-
-// Точность (снижаем при перетаскивании — для плавности)
-const DRAW_HIGH = { numBeta: 8000, numU: 800, numBins: 80 };
-const DRAW_LOW  = { numBeta: 2000, numU: 400, numBins: 80 };
-let currentQuality = DRAW_LOW;
-let qualityTimer = null;
 
 // ============================================================
 // УТИЛИТЫ
@@ -200,7 +237,6 @@ function linspace(a, b, n) {
   return arr;
 }
 
-// Детерминированный ГПСЧ (чтобы кривая не «дрожала» между кадрами)
 function mulberry32(seed) {
   let a = seed >>> 0;
   return function() {
@@ -217,11 +253,9 @@ function gaussian(rng, sigma) {
   return sigma * Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
 }
 
-// Линейная интерполяция (аналог np.interp)
 function interp(x, xp, fp) {
   if (x <= xp[0]) return fp[0];
   if (x >= xp[xp.length - 1]) return fp[fp.length - 1];
-  // Бинарный поиск
   let lo = 0, hi = xp.length - 1;
   while (hi - lo > 1) {
     const mid = (lo + hi) >> 1;
@@ -233,7 +267,7 @@ function interp(x, xp, fp) {
 }
 
 // ============================================================
-// ЯДРО: compute_ese_multi (порт на JS)
+// ЯДРО: compute_ese_multi
 // ============================================================
 function computeEseMulti(lenses, sigmaSource, uRange, uPrimeRange,
                          numBeta, numU, numBins, seed) {
@@ -262,7 +296,6 @@ function computeEseMulti(lenses, sigmaSource, uRange, uPrimeRange,
     }
   }
 
-  // Бины
   const bins = linspace(uPrimeRange[0], uPrimeRange[1], numBins + 1);
   const binW = bins[1] - bins[0];
   const histLensed   = new Float64Array(numBins);
@@ -290,7 +323,6 @@ function computeEseMulti(lenses, sigmaSource, uRange, uPrimeRange,
     binCenters[i] = (bins[i] + bins[i + 1]) / 2;
     const hU = histUnlensed[i] / norm;
     const hL = histLensed[i]   / norm;
-    // Как в Python: np.where(hist_unlensed > 0, ..., 0.0)
     intensity[i] = hU > 0 ? hL / hU : 0.0;
   }
 
@@ -298,9 +330,30 @@ function computeEseMulti(lenses, sigmaSource, uRange, uPrimeRange,
 }
 
 // ============================================================
+// Кэш Монте-Карло
+// ============================================================
+const eseCache = new Map();
+
+function cacheKey(alpha1Nu, alpha2Nu, sigmaNu) {
+  return [
+    alpha1Nu.toFixed(5),
+    alpha2Nu.toFixed(5),
+    sigmaNu.toFixed(5),
+    params.a_ratio2.toFixed(5),
+    params.u_range_min.toFixed(3),
+    params.u_range_max.toFixed(3),
+    params.u_prime_range_min.toFixed(3),
+    params.u_prime_range_max.toFixed(3),
+    params.draw_num_beta,
+    params.draw_num_u,
+    params.draw_num_bins
+  ].join('|');
+}
+
+// ============================================================
 // МОДЕЛЬ: F(t) для одной частоты
 // ============================================================
-function modelFForOneFrequency(tArray, nuGhz, tRef, useCached) {
+function modelFForOneFrequency(tArray, nuGhz, tRef) {
   const ratio = nuGhz / NU_REF_GHZ;
   const alphaScale = Math.pow(ratio, -2);
   const sigmaScale = Math.pow(ratio, -1);
@@ -318,38 +371,28 @@ function modelFForOneFrequency(tArray, nuGhz, tRef, useCached) {
       a_ratio: params.a_ratio2, z: 0.0 }
   ];
 
-  // Ключ кэша зависит только от alpha1Nu, alpha2Nu, sigmaNu, a_ratio2,
-  // u_range. При изменении mu_eff/t_min1/slope/F0 — не пересчитываем.
-  const cacheKey = [
-    alpha1Nu.toFixed(4),
-    alpha2Nu.toFixed(4),
-    sigmaNu.toFixed(4),
-    params.a_ratio2.toFixed(4),
-    params.u_range_min.toFixed(2),
-    params.u_range_max.toFixed(2),
-    currentQuality.numBeta,
-    currentQuality.numU,
-    currentQuality.numBins
-  ].join('|');
-
-  let cached = useCached ? eseCache.get(cacheKey) : null;
+  const key = cacheKey(alpha1Nu, alpha2Nu, sigmaNu);
+  let cached = eseCache.get(key);
   if (!cached) {
-    const uRange = [params.u_range_min, params.u_range_max];
     cached = computeEseMulti(
       lensesRef, sigmaNu,
-      uRange, uRange,
-      currentQuality.numBeta,
-      currentQuality.numU,
-      currentQuality.numBins,
-      42  // seed
+      [params.u_range_min, params.u_range_max],
+      [params.u_prime_range_min, params.u_prime_range_max],
+      params.draw_num_beta,
+      params.draw_num_u,
+      params.draw_num_bins,
+      42
     );
-    if (useCached) eseCache.set(cacheKey, cached);
+    eseCache.set(key, cached);
   }
 
   const bc = cached.binCenters;
-  const Iref = cached.intensity;
+  // NaN → 1.0 (как в Python)
+  const cleaned = new Array(cached.intensity.length);
+  for (let k = 0; k < cached.intensity.length; k++) {
+    cleaned[k] = isNaN(cached.intensity[k]) ? 1.0 : cached.intensity[k];
+  }
 
-  // u_offset1_t = mu_eff * (t - t_min1)
   const F0 = nuGhz === 5.0 ? params.F0_1
            : nuGhz === 8.0 ? params.F0_2
            : params.F0_3;
@@ -358,24 +401,7 @@ function modelFForOneFrequency(tArray, nuGhz, tRef, useCached) {
   for (let i = 0; i < tArray.length; i++) {
     const uOff1t = params.mu_eff * (tArray[i] - params.t_min1);
     const xInterp = -uOff1t;
-
-    // np.interp требует неубывающий xp. У нас bc уже неубывающий.
-    let Iese;
-    if (isNaN(Iref[0])) {
-      // Если в данных NaN, заменяем на 1.0 построчно (как Python)
-      const cleaned = Iref.map(v => isNaN(v) ? 1.0 : v);
-      Iese = interp(xInterp, bc, cleaned);
-    } else {
-      // На случай, если попадутся NaN в середине — сделаем cleaned всегда
-      const cleaned = new Array(Iref.length);
-      let hasNaN = false;
-      for (let k = 0; k < Iref.length; k++) {
-        if (isNaN(Iref[k])) { cleaned[k] = 1.0; hasNaN = true; }
-        else cleaned[k] = Iref[k];
-      }
-      Iese = interp(xInterp, bc, cleaned);
-    }
-
+    const Iese = interp(xInterp, bc, cleaned);
     const Itrend = 1.0 + params.slope * (tArray[i] - tRef);
     F[i] = F0 * Iese * Itrend;
   }
@@ -383,13 +409,10 @@ function modelFForOneFrequency(tArray, nuGhz, tRef, useCached) {
   return F;
 }
 
-// Кэш результатов Монте-Карло
-const eseCache = new Map();
-
 // ============================================================
 // ЗАГРУЗКА CSV
 // ============================================================
-let dataCache = null;   // { t_list, F_list, F_err_list, tRef }
+let dataCache = null;
 
 async function loadData() {
   const tList = [], FList = [], FErrList = [];
@@ -397,7 +420,6 @@ async function loadData() {
   for (const path of FILE_PATHS) {
     const text = await (await fetch(path)).text();
     const lines = text.trim().split('\n');
-    // Пропускаем заголовок
     const rows = [];
     for (let i = 1; i < lines.length; i++) {
       const parts = lines[i].split(',');
@@ -415,7 +437,6 @@ async function loadData() {
     FErrList.push(rows.map(r => r.err));
   }
 
-  // Общий t_ref
   const allT = tList.flat();
   const tRef = 0.5 * (Math.min(...allT) + Math.max(...allT));
 
@@ -437,7 +458,6 @@ function update() {
 
   const traces = [];
 
-  // ---- Данные ----
   if (showData) {
     for (let i = 0; i < 3; i++) {
       traces.push({
@@ -460,11 +480,10 @@ function update() {
     }
   }
 
-  // ---- Модель ----
   if (showModel) {
     for (let i = 0; i < 3; i++) {
       const nu = NU_LIST_GHZ[i];
-      const F = modelFForOneFrequency(tList[i], nu, tRef, true);
+      const F = modelFForOneFrequency(tList[i], nu, tRef);
       traces.push({
         x: tList[i],
         y: F,
@@ -508,11 +527,13 @@ function update() {
 
   const dt = (performance.now() - t0).toFixed(0);
   const nPts = tList.reduce((s, arr) => s + arr.length, 0);
-  const q = currentQuality.numBeta === DRAW_HIGH.numBeta ? 'высокое' : 'быстрое';
+
   document.getElementById('status').textContent =
-    `✓ Пересчёт: ${dt} ms · точек данных: ${nPts} · качество: ${q} ` +
-    `(${currentQuality.numBeta}×${currentQuality.numU})`;
+    `✓ Пересчёт: ${dt} ms · точек данных: ${nPts} · кэш: ${eseCache.size} записей`;
   document.getElementById('status').className = 'status';
+
+  document.getElementById('resolutionHint').textContent =
+    `u' бины: ${params.draw_num_bins} · диапазон u': [${params.u_prime_range_min}, ${params.u_prime_range_max}] · пересчёт: ${dt} ms`;
 }
 
 // ============================================================
@@ -535,82 +556,55 @@ function makeSlider(containerId, key, label, min, max, step, fmt) {
   input.type = 'range';
   input.min = min; input.max = max; input.step = step;
   input.value = params[key];
+  input.dataset.key = key;
 
   input.addEventListener('input', e => {
     params[key] = parseFloat(e.target.value);
     valEl.textContent = fmt(params[key]);
     update();
-
-    // После остановки — повышаем качество
-    currentQuality = DRAW_LOW;
-    if (qualityTimer) clearTimeout(qualityTimer);
-    qualityTimer = setTimeout(() => {
-      currentQuality = DRAW_HIGH;
-      update();
-    }, 400);
   });
 
   div.appendChild(labelEl);
   div.appendChild(input);
   container.appendChild(div);
-
-  return { input, valEl };
 }
-
-const sliderRefs = [];
 
 function buildSliders() {
-  // ---- Форма линз ----
-  sliderRefs.push(makeSlider('gridLenses', 'alpha_ref', 'alpha_ref', 0, 5, 0.01, v => v.toFixed(2)));
-  sliderRefs.push(makeSlider('gridLenses', 'alpha2',    'alpha2',    0, 5, 0.01, v => v.toFixed(2)));
-  sliderRefs.push(makeSlider('gridLenses', 'a_ratio2',  'a_ratio2',  0.3, 3, 0.01, v => v.toFixed(2)));
-  sliderRefs.push(makeSlider('gridLenses', 'sigma_ref', 'sigma_ref', 0.3, 5, 0.01, v => v.toFixed(2)));
+  // Форма линз
+  makeSlider('gridLenses', 'alpha_ref', 'alpha_ref', 0, 5, 0.01, v => v.toFixed(2));
+  makeSlider('gridLenses', 'alpha2',    'alpha2',    0, 5, 0.01, v => v.toFixed(2));
+  makeSlider('gridLenses', 'a_ratio2',  'a_ratio2',  0.3, 3, 0.01, v => v.toFixed(2));
+  makeSlider('gridLenses', 'sigma_ref', 'sigma_ref', 0.3, 5, 0.01, v => v.toFixed(2));
 
-  // ---- Временная эволюция ----
-  sliderRefs.push(makeSlider('gridTime', 't_min1',  't_min1',  2015.0, 2015.65, 0.0001, v => v.toFixed(4)));
-  sliderRefs.push(makeSlider('gridTime', 't_delay', 't_delay', 0, 0.6, 0.0001, v => v.toFixed(4)));
-  sliderRefs.push(makeSlider('gridTime', 'mu_eff',  'mu_eff',  0, 100, 0.1, v => v.toFixed(1)));
-  sliderRefs.push(makeSlider('gridTime', 'slope',   'slope',   -1, 1, 0.005, v => v.toFixed(3)));
+  // Временная эволюция
+  makeSlider('gridTime', 't_min1',  't_min1',  2015.0, 2015.65, 0.0001, v => v.toFixed(4));
+  makeSlider('gridTime', 't_delay', 't_delay', 0, 0.6, 0.0001, v => v.toFixed(4));
+  makeSlider('gridTime', 'mu_eff',  'mu_eff',  0, 100, 0.1, v => v.toFixed(1));
+  makeSlider('gridTime', 'slope',   'slope',   -1, 1, 0.005, v => v.toFixed(3));
 
-  // ---- Нормировки ----
-  sliderRefs.push(makeSlider('gridNorm', 'F0_1', 'F0 (5 GHz)',  0.5, 5, 0.01, v => v.toFixed(2)));
-  sliderRefs.push(makeSlider('gridNorm', 'F0_2', 'F0 (8 GHz)',  0.5, 5, 0.01, v => v.toFixed(2)));
-  sliderRefs.push(makeSlider('gridNorm', 'F0_3', 'F0 (11 GHz)', 0.5, 5, 0.01, v => v.toFixed(2)));
+  // Нормировки
+  makeSlider('gridNorm', 'F0_1', 'F0 (5 GHz)',  0.5, 5, 0.01, v => v.toFixed(2));
+  makeSlider('gridNorm', 'F0_2', 'F0 (8 GHz)',  0.5, 5, 0.01, v => v.toFixed(2));
+  makeSlider('gridNorm', 'F0_3', 'F0 (11 GHz)', 0.5, 5, 0.01, v => v.toFixed(2));
 
-  // ---- u_range ----
-  sliderRefs.push(makeSlider('gridNorm', 'u_range_min', 'u_range_min', -30, 0, 0.5, v => v.toFixed(1)));
-  sliderRefs.push(makeSlider('gridNorm', 'u_range_max', 'u_range_max',  0, 30, 0.5, v => v.toFixed(1)));
-}
-
-function syncSlidersToParams() {
-  // При сбросе — обновляем все input.value
-  const allInputs = document.querySelectorAll('.slider-group input[type="range"]');
-  // Порядок соответствует buildSliders()
-  const keys = [
-    'alpha_ref', 'alpha2', 'a_ratio2', 'sigma_ref',
-    't_min1', 't_delay', 'mu_eff', 'slope',
-    'F0_1', 'F0_2', 'F0_3',
-    'u_range_min', 'u_range_max'
-  ];
-  allInputs.forEach((inp, i) => {
-    if (keys[i] && params[keys[i]] !== undefined) {
-      inp.value = params[keys[i]];
-    }
-  });
+  // Resolution
+  makeSlider('gridResolution', 'u_range_min',       'u_range_min',       -30, 0, 0.5, v => v.toFixed(1));
+  makeSlider('gridResolution', 'u_range_max',       'u_range_max',         0, 30, 0.5, v => v.toFixed(1));
+  makeSlider('gridResolution', 'u_prime_range_min', "u'_range_min",      -30, 0, 0.5, v => v.toFixed(1));
+  makeSlider('gridResolution', 'u_prime_range_max', "u'_range_max",        0, 30, 0.5, v => v.toFixed(1));
+  makeSlider('gridResolution', 'draw_num_beta',     'num_beta',          500, 20000, 100, v => v.toFixed(0));
+  makeSlider('gridResolution', 'draw_num_u',        'num_u',             100, 2000, 50, v => v.toFixed(0));
+  makeSlider('gridResolution', 'draw_num_bins',     'num_bins',           20, 400, 5, v => v.toFixed(0));
 }
 
 function resetParams() {
   params = { ...DEFAULTS };
-  // Обновляем подписи
-  sliderRefs.forEach((ref, i) => {
-    // Опорядок совпадает с buildSliders
-  });
-  // Проще: перерисуем панели
+  eseCache.clear();
+  // Перерисовываем панели
   document.getElementById('gridLenses').innerHTML = '';
   document.getElementById('gridTime').innerHTML = '';
   document.getElementById('gridNorm').innerHTML = '';
-  sliderRefs.length = 0;
-  eseCache.clear();
+  document.getElementById('gridResolution').innerHTML = '';
   buildSliders();
   update();
 }
@@ -624,13 +618,11 @@ document.getElementById('resetBtn').addEventListener('click', resetParams);
 
 buildSliders();
 
-// Загрузка данных и первый рендер
 (async () => {
   const statusEl = document.getElementById('status');
   try {
     await loadData();
     statusEl.textContent = '✓ Данные загружены. Идёт первый расчёт…';
-    currentQuality = DRAW_HIGH;
     update();
   } catch (err) {
     statusEl.textContent =
